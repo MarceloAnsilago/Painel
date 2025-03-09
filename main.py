@@ -82,7 +82,7 @@ if not st.session_state.painel_iniciado:
     with col2:
         if st.button("🚀 Iniciar Painel", key="iniciar_painel"):
             st.session_state.painel_iniciado = True
-            st.experimental_rerun()
+            st.rerun()
     st.stop()
 
 # Função para consultar a senha aberta no banco
