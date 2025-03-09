@@ -1,0 +1,5 @@
+streamlit==1.42.2
+streamlit-autorefresh==1.0.1
+pandas==2.0.3
+streamlit-option-menu==0.3.8
+reportlab==3.6.12
