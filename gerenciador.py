@@ -1,54 +1,55 @@
-import sqlite3
+import psycopg2
 import datetime
-import math
-import time
 import pandas as pd
 import streamlit as st
 from streamlit_option_menu import option_menu
-from streamlit_autorefresh import st_autorefresh 
+from streamlit_autorefresh import st_autorefresh
 import io
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 import base64
+import time
 
+# 🔹 Configuração do Supabase PostgreSQL
+DATABASE_URL = "postgresql://postgres.pbtqsdupirqkikwtuncx:cLqwDiYNFFtwS6T4@aws-0-sa-east-1.pooler.supabase.com:6543/postgres"
 
+# Conectar ao banco
+conn = psycopg2.connect(DATABASE_URL)
+cursor = conn.cursor()
+
+# 🔹 Criar tabela automaticamente se não existir
+def setup_database():
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS senha (
+        id SERIAL PRIMARY KEY,
+        secao INTEGER,  -- Corrigido de 'seco' para 'secao'
+        senha INTEGER,
+        hora TIMESTAMP DEFAULT now(),
+        usuario TEXT,
+        resposta TEXT,
+        status TEXT,
+        terminal INTEGER,
+        unidade TEXT
+    )
+    """)
+    conn.commit()
+
+setup_database()
+
+# 🔹 Configurações da Página
 st.set_page_config(layout="wide", page_title="Gerenciador")
 
-# Remova a inicialização automática da seção para que o usuário informe
-
-
+# 🔹 Inicializar Session State
+if "secao" not in st.session_state:
+    st.session_state["secao"] = None
 if "chamar_clicked" not in st.session_state:
     st.session_state["chamar_clicked"] = False
-if "next_chamar_novamente" not in st.session_state:
-    st.session_state["next_chamar_novamente"] = 0
-if "chamar_info_message" not in st.session_state:
-    st.session_state["chamar_info_message"] = ""
 
 st.title("Gerenciador")
 st.markdown("---")
 
-# --- Configuração do Banco de Dados ---
-def setup_database():
-    conn = sqlite3.connect("senhas.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS senha (
-        secao INTEGER,
-        senha INTEGER,
-        hora TEXT,
-        usuario TEXT,
-        resposta TEXT,
-        status TEXT,
-        terminal INTEGER
-    )
-    """)
-    conn.commit()
-    conn.close()
-
-setup_database()
-
-# --- Entrada da Seção ---
-if "secao" not in st.session_state:
+# 🔹 Entrada da Seção
+if st.session_state["secao"] is None:
     secao_input = st.text_input("Informe a seção (número):", value="")
     if secao_input.strip():
         try:
@@ -56,81 +57,79 @@ if "secao" not in st.session_state:
         except ValueError:
             st.error("Por favor, informe apenas números para a seção.")
             st.stop()
-        # Verifica se a seção existe no banco de dados
-        conn = sqlite3.connect("senhas.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM senha WHERE secao = ?", (secao_num,))
-        count = cursor.fetchone()[0]
-        conn.close()
-        if count == 0:
-            st.error("Seção não encontrada no banco de dados. Verifique o número informado.")
+
+        # cursor.execute("SELECT COUNT(*) FROM senha WHERE secao = %s", (secao_num,))
+        cursor.execute("SELECT secao FROM senha WHERE secao = %s", (secao_num,))
+        secoes = cursor.fetchall()
+        if not secoes:
+            st.error("Seção não encontrada no banco de dados.")
             st.stop()
         else:
-            st.session_state.secao = secao_num
+            st.session_state["secao"] = secao_num
+
     else:
-        st.info("Digite o número da seção acima para prosseguir.")
+        st.info("Digite o número da seção para prosseguir.")
         st.stop()
 
-# --- Menu Lateral ---
+# 🔹 Menu Lateral
 with st.sidebar:
     selected = option_menu(
         menu_title="Menu",
         options=["Chamar", "Senhas"],
         icons=["telephone", "table"],
         menu_icon="cast",
-        default_index=0,
-        styles={
-            "container": {"padding": "5!important", "background-color": "#fafafa"},
-            "icon": {"color": "red", "font-size": "25px"},
-            "nav-link": {
-                "font-size": "16px",
-                "text-align": "left",
-                "margin": "0px",
-                "color": "white",
-                "background-color": "red",
-                "border-radius": "5px",
-                "padding": "8px 16px"
-            },
-            "nav-link-selected": {"background-color": "darkred"}
-        }
+        default_index=0
     )
-
+# Função de contagem regressiva para os botões "Chamar" e "Chamar Novamente"
+def countdown_info(message, seconds):
+    placeholder = st.empty()
+    for i in range(seconds, 0, -1):
+        placeholder.info(f"{message} em {i} segundos...")
+        time.sleep(1)
+    placeholder.empty()
 
 if selected == "Chamar":
-    st_autorefresh(interval=1000, key="refresher")
-    if st.session_state.get("chamar_info_message"):
-        st.info(st.session_state["chamar_info_message"])
 
-    # Inicializa as chaves se ainda não existirem
+    if "chamar_info_message" not in st.session_state:
+        st.session_state["chamar_info_message"] = ""
     if "nome" not in st.session_state:
         st.session_state["nome"] = ""
     if "terminal_input" not in st.session_state or st.session_state["terminal_input"] < 1:
         st.session_state["terminal_input"] = 1
+    if "chamar_clicked" not in st.session_state:
+        st.session_state["chamar_clicked"] = False
+    if "senha_numero" not in st.session_state:
+        st.session_state["senha_numero"] = 0
+    if "next_chamar_novamente" not in st.session_state:
+        st.session_state["next_chamar_novamente"] = 0
 
-    # Inputs: Nome e Terminal em colunas, utilizando os valores do session_state como default
+    # Exibe mensagem de informação, se houver
+    if st.session_state.get("chamar_info_message"):
+        st.info(st.session_state["chamar_info_message"])
+
+    # Inputs: Nome e Terminal
     col_nome, col_terminal = st.columns(2)
     nome = col_nome.text_input("Informe seu nome:", value=st.session_state["nome"])
-    terminal_input = col_terminal.number_input("Informe seu terminal:",
-                                               value=st.session_state["terminal_input"],
-                                               min_value=1,
-                                               step=1)
-
-    # Atualiza os valores no session_state para que persistam mesmo após a mudança de aba
+    terminal_input = col_terminal.number_input(
+        "Informe seu terminal:",
+        value=st.session_state["terminal_input"],
+        min_value=1,
+        step=1
+    )
     st.session_state["nome"] = nome
     st.session_state["terminal_input"] = terminal_input
 
-    # Verifica se os inputs foram informados
     if not nome or not terminal_input:
         st.warning("Por favor, informe seu nome e terminal para prosseguir.")
         st.stop()
 
     st.markdown("---")
 
-    # Verifica se existem registros no banco para a sessão atual
-    conn = sqlite3.connect("senhas.db")
+    # Verifica se há registros para a sessão atual (exceto admin)
+    conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT COUNT(*) FROM senha WHERE secao = ? AND status <> 'admin'",
+        "SELECT COUNT(*) FROM senha WHERE secao = %s AND status <> 'admin'",
         (st.session_state.secao,)
     )
     count_valid = cursor.fetchone()[0]
@@ -140,164 +139,83 @@ if selected == "Chamar":
         st.info("Por favor, gere as senhas na aba 'Senhas' antes de chamar.")
         st.stop()
 
+    # --- Layout em 2 colunas: Botões e Card ---
+    col_buttons, col_card = st.columns([1, 1])
 
-    # Conecta ao banco de dados
-    conn = sqlite3.connect("senhas.db")
-    cursor = conn.cursor()
-
-    # 1) Tenta buscar o maior valor de 'senha' onde status <> '0'
-    cursor.execute("""
-        SELECT unidade, senha, hora
-        FROM senha
-        WHERE secao = ?
-          AND status <> '0'
-        ORDER BY senha DESC
-        LIMIT 1
-    """, (st.session_state.secao,))
-    row = cursor.fetchone()
-
-    # 2) Se não encontrou, busca o registro onde status='admin' e senha=0
-    if not row:
-        cursor.execute("""
-            SELECT unidade, senha, hora
-            FROM senha
-            WHERE secao = ?
-              AND status = 'admin'
-              AND senha = 0
-            LIMIT 1
-        """, (st.session_state.secao,))
-        row = cursor.fetchone()
-
-    conn.close()
-
-    # 3) Define as variáveis para o card
-    if row:
-        cabecalho = row[0] if row[0] else "SEM UNIDADE"  # coluna 'unidade'
-        senha_numero = row[1] if row[1] else 0           # coluna 'senha'
-        hora_str = row[2] if row[2] else "Data não encontrada"  # coluna 'hora'
-    else:
-        cabecalho = "SEM UNIDADE"
-        senha_numero = 0
-        hora_str = "Data não encontrada"
-
-    # Define a seção como string para exibir no rodapé
-    secao_str = st.session_state.secao
-
-    # 4) Cria o card centralizado
-    col_left, col_middle, col_right = st.columns([1,2,1])
-    with col_middle:
-        st.markdown(
-            f"""
-            <div style="border: 1px solid black; text-align:center; width:300px;">
-                <div style="background-color:black; color:white; padding:10px; font-weight:bold;">
-                    {cabecalho}
-                </div>
-                <div style="padding:20px;">
-                    <div style="font-size:20px; font-weight:bold;">
-                        SENHA
-                    </div>
-                    <div style="font-size:54px; font-weight:bold;">
-                        {senha_numero:03d}
-                    </div>
-                </div>
-                <div style="background-color:black; color:white; padding:15px; font-size:14px;">
-                    DATA {hora_str} — Seção {secao_str}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    # --- Separador e Botão "Chamar" para atualizar o registro ---
-    st.markdown("---")
-
-    with st.container():
-        # Cria um placeholder para a mensagem
-        info_placeholder = st.empty()
- # Se o botão "Chamar" ainda não foi clicado, exibe-o
-    if not st.session_state["chamar_clicked"]:
-        if st.button("Chamar"):
-            # Antes de chamar, verifica se existe registro aberto
-            conn = sqlite3.connect("senhas.db")
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT usuario 
-                FROM senha
-                WHERE secao = ? AND status = 'aberto'
-                LIMIT 1
-            """, (st.session_state.secao,))
-            open_record = cursor.fetchone()
-            if open_record:
-                st.session_state["chamar_info_message"] = f"Aguarde, {open_record[0]} ainda não encerrou sua chamada."
-                conn.close()
-                info_placeholder.info(st.session_state["chamar_info_message"])
-                st.stop()
-            else:
-                # Obtém a hora atual
-                hora_atual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                # Procura o menor registro com senha >= 1 e status = '0'
+    ##################################
+    # Coluna dos Botões (sem legenda)
+    ##################################
+    with col_buttons:
+        # Se ainda não clicou "Chamar", mostra somente esse botão
+        if not st.session_state["chamar_clicked"]:
+            if st.button("Chamar Próximo"):
+                conn = psycopg2.connect(DATABASE_URL)
+                cursor = conn.cursor()
+                # Verifica se já existe algum registro "aberto"
                 cursor.execute("""
-                    SELECT senha 
+                    SELECT usuario 
                     FROM senha
-                    WHERE secao = ? AND senha >= 1 AND status = '0'
-                    ORDER BY senha ASC
+                    WHERE secao = %s AND status = 'aberto'
                     LIMIT 1
                 """, (st.session_state.secao,))
-                row_chamar = cursor.fetchone()
-
-                if row_chamar:
-                    senha_para_chamar = row_chamar[0]
-                    # Atualiza o registro com os dados fornecidos
-                    cursor.execute("""
-                        UPDATE senha
-                        SET hora = ?, usuario = ?, resposta = ?, status = ?, terminal = ?
-                        WHERE secao = ? AND senha = ?
-                    """, (hora_atual, nome, "chamando 1", "aberto", terminal_input, st.session_state.secao, senha_para_chamar))
-                    conn.commit()
-                    st.success(f"Senha {senha_para_chamar:03d} chamada!")
-                    # Define o tempo para reabilitar o botão "Chamar Novamente"
-                    st.session_state["next_chamar_novamente"] = time.time() + 6
-                    # Indica que o botão "Chamar" foi clicado
-                    st.session_state["chamar_clicked"] = True
-                    # Limpa a mensagem informativa, se houver
-                    st.session_state["chamar_info_message"] = ""
-                    info_placeholder.empty()  # limpa o placeholder
+                open_record = cursor.fetchone()
+                if open_record:
+                    st.session_state["chamar_info_message"] = (
+                        f"Aguarde, {open_record[0]} ainda não encerrou sua chamada."
+                    )
+                    conn.close()
+                    st.stop()
                 else:
-                    st.warning("Nenhuma senha encontrada com status '0' para chamar.")
-                conn.close()
-    else:
-        # Se o botão "Chamar" já foi clicado, exibe os 3 botões no mesmo contêiner
-        col_a, col_b, col_c = st.columns(3)
-        now = time.time()
-        if now < st.session_state["next_chamar_novamente"]:
-            seconds_left = int(st.session_state["next_chamar_novamente"] - now)
-            button_text = f"Chamar Novamente ({seconds_left}s)"
-            disable_chamar_novamente = True
+                    hora_atual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    cursor.execute("""
+                        SELECT senha 
+                        FROM senha
+                        WHERE secao = %s AND senha >= 1 AND status = '0'
+                        ORDER BY senha ASC
+                        LIMIT 1
+                    """, (st.session_state.secao,))
+                    row_chamar = cursor.fetchone()
+                    if row_chamar:
+                        senha_para_chamar = row_chamar[0]
+                        cursor.execute("""
+                            UPDATE senha
+                            SET hora = %s, usuario = %s, resposta = %s, status = %s, terminal = %s
+                            WHERE secao = %s AND senha = %s
+                        """, (
+                            hora_atual, nome, "chamando 1", "aberto", terminal_input,
+                            st.session_state.secao, senha_para_chamar
+                        ))
+                        conn.commit()
+                        st.success(f"Senha {senha_para_chamar:03d} chamada!")
+                        st.session_state["next_chamar_novamente"] = time.time() + 5
+                        st.session_state["chamar_clicked"] = True
+                        st.session_state["chamar_info_message"] = ""
+                        countdown_info("Chamando", 5)
+                        st.rerun()
+                    else:
+                        st.warning("Nenhuma senha encontrada com status '0' para chamar.")
+                    conn.close()
         else:
-            button_text = "Chamar Novamente"
-            disable_chamar_novamente = False
-
-        with col_a:
-            if st.button(button_text, disabled=disable_chamar_novamente):
-                # Lógica de "Chamar Novamente"
-                conn = sqlite3.connect("senhas.db")
+            if st.button("Chamar Novamente"):
+                conn = psycopg2.connect(DATABASE_URL)
                 cursor = conn.cursor()
-                # Procura o registro aberto com os mesmos dados (usuário, terminal e senha exibida no card)
                 cursor.execute("""
                     SELECT resposta 
                     FROM senha
-                    WHERE secao = ? AND status = 'aberto' AND usuario = ? AND terminal = ? AND senha = ?
+                    WHERE secao = %s AND status = 'aberto' AND usuario = %s 
+                        AND terminal = %s AND senha = %s
                     LIMIT 1
-                """, (st.session_state.secao, nome, terminal_input, senha_numero))
+                """, (
+                    st.session_state.secao, nome, terminal_input,
+                    st.session_state["senha_numero"]
+                ))
                 open_record = cursor.fetchone()
                 if open_record:
                     current_response = open_record[0] or ""
-                    # Se a resposta estiver no formato "chamando X", incrementa o contador; caso contrário, inicia em 1.
                     try:
                         parts = current_response.split()
                         if len(parts) == 2 and parts[0].lower() == "chamando":
-                            count = int(parts[1])
-                            new_count = count + 1
+                            new_count = int(parts[1]) + 1
                         else:
                             new_count = 1
                     except:
@@ -305,138 +223,226 @@ if selected == "Chamar":
                     new_response = f"chamando {new_count}"
                     cursor.execute("""
                         UPDATE senha
-                        SET resposta = ?
-                        WHERE secao = ? AND status = 'aberto' AND usuario = ? AND terminal = ? AND senha = ?
-                    """, (new_response, st.session_state.secao, nome, terminal_input, senha_numero))
+                        SET resposta = %s
+                        WHERE secao = %s AND status = 'aberto' AND usuario = %s 
+                            AND terminal = %s AND senha = %s
+                    """, (
+                        new_response, st.session_state.secao, nome,
+                        terminal_input, st.session_state["senha_numero"]
+                    ))
                     conn.commit()
                     st.success(f"Registro atualizado para: {new_response}")
-                    # Reinicia a contagem regressiva para 5 segundos a cada clique
-                    st.session_state["next_chamar_novamente"] = time.time() + 6
+                    st.session_state["next_chamar_novamente"] = time.time() + 5
+                    countdown_info("Atualizando", 5)
+                    st.rerun()
                 else:
                     st.warning("Nenhum registro aberto encontrado para atualizar.")
                 conn.close()
 
-          
-            with col_b:
-                if st.button("Chamar Compareceu"):
-                    conn = sqlite3.connect("senhas.db")
-                    cursor = conn.cursor()
-                    # Procura o registro aberto que corresponda aos dados atuais
+            if st.button("Compareceu"):
+                conn = psycopg2.connect(DATABASE_URL)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT * FROM senha
+                    WHERE secao = %s AND status = 'aberto' AND usuario = %s 
+                        AND terminal = %s AND senha = %s
+                    LIMIT 1
+                """, (
+                    st.session_state.secao, nome, terminal_input,
+                    st.session_state["senha_numero"]
+                ))
+                record = cursor.fetchone()
+                if record:
+                    hora_atual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     cursor.execute("""
-                        SELECT * FROM senha
-                        WHERE secao = ? AND status = 'aberto' AND usuario = ? AND terminal = ? AND senha = ?
-                        LIMIT 1
-                    """, (st.session_state.secao, nome, terminal_input, senha_numero))
-                    record = cursor.fetchone()
-                    if record:
-                        hora_atual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        cursor.execute("""
-                            UPDATE senha
-                            SET hora = ?, resposta = ?, status = ?
-                            WHERE secao = ? AND status = 'aberto' AND usuario = ? AND terminal = ? AND senha = ?
-                        """, (hora_atual, "compareceu", "encerrado",
-                            st.session_state.secao, nome, terminal_input, senha_numero))
-                        conn.commit()
-                        st.success(f"Senha {senha_numero:03d} encerrada como 'compareceu'!")
-                        # Opcional: reseta o estado para que a interface volte ao estado inicial
-                        st.session_state["chamar_clicked"] = False
-                    else:
-                        st.warning("Nenhum registro aberto encontrado para atualizar.")
-                    conn.close()
-           
-            with col_c:
-                if st.button("Chamar Não Compareceu"):
-                    conn = sqlite3.connect("senhas.db")
-                    cursor = conn.cursor()
-                    # Procura o registro aberto com os mesmos dados (usuário, terminal e senha exibida no card)
+                        UPDATE senha
+                        SET hora = %s, resposta = %s, status = %s
+                        WHERE secao = %s AND status = 'aberto' AND usuario = %s 
+                            AND terminal = %s AND senha = %s
+                    """, (
+                        hora_atual, "compareceu", "encerrado",
+                        st.session_state.secao, nome, terminal_input,
+                        st.session_state["senha_numero"]
+                    ))
+                    conn.commit()
+                    st.success(f"Senha {st.session_state['senha_numero']:03d} encerrada como 'compareceu'!")
+                    st.session_state["chamar_clicked"] = False
+                    st.rerun()
+                else:
+                    st.warning("Nenhum registro aberto encontrado para atualizar.")
+                conn.close()
+
+            if st.button("Não Compareceu"):
+                conn = psycopg2.connect(DATABASE_URL)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT * FROM senha
+                    WHERE secao = %s AND status = 'aberto' AND usuario = %s 
+                        AND terminal = %s AND senha = %s
+                    LIMIT 1
+                """, (
+                    st.session_state.secao, nome, terminal_input,
+                    st.session_state["senha_numero"]
+                ))
+                record = cursor.fetchone()
+                if record:
+                    hora_atual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     cursor.execute("""
-                        SELECT * FROM senha
-                        WHERE secao = ? AND status = 'aberto' AND usuario = ? AND terminal = ? AND senha = ?
-                        LIMIT 1
-                    """, (st.session_state.secao, nome, terminal_input, senha_numero))
-                    record = cursor.fetchone()
-                    if record:
-                        hora_atual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        cursor.execute("""
-                            UPDATE senha
-                            SET hora = ?, resposta = ?, status = ?
-                            WHERE secao = ? AND status = 'aberto' AND usuario = ? AND terminal = ? AND senha = ?
-                        """, (hora_atual, "não compareceu", "encerrado",
-                            st.session_state.secao, nome, terminal_input, senha_numero))
-                        conn.commit()
-                        st.success(f"Senha {senha_numero:03d} encerrada como 'não compareceu'!")
-                        # Opcional: reseta o estado para que a interface volte ao estado inicial
-                        st.session_state["chamar_clicked"] = False
-                    else:
-                        st.warning("Nenhum registro aberto encontrado para atualizar.")
-                    conn.close()
+                        UPDATE senha
+                        SET hora = %s, resposta = %s, status = %s
+                        WHERE secao = %s AND status = 'aberto' AND usuario = %s 
+                            AND terminal = %s AND senha = %s
+                    """, (
+                        hora_atual, "não compareceu", "encerrado",
+                        st.session_state.secao, nome, terminal_input,
+                        st.session_state["senha_numero"]
+                    ))
+                    conn.commit()
+                    st.success(f"Senha {st.session_state['senha_numero']:03d} encerrada como 'não compareceu'!")
+                    st.session_state["chamar_clicked"] = False
+                    st.rerun()
+                else:
+                    st.warning("Nenhum registro aberto encontrado para atualizar.")
+                conn.close()
 
-
-
-
-    # --- Separador para Próxima senha sem chamar ---
+    ##################################
+    # Separador e Próxima sem chamar
+    ##################################
     st.markdown("---")
-    # Checkbox para "Próxima senha sem chamar"
-    proxima_sem_chamar = st.checkbox("Próxima senha sem chamar", value=False)
-    if proxima_sem_chamar:
-        if st.button("Adiantar"):
-            conn = sqlite3.connect("senhas.db")
+
+    # Exibe o botão "Adiantar Próxima sem chamar" apenas se "chamar_clicked" for False
+    if not st.session_state["chamar_clicked"]:
+        if st.button("Adiantar Próxima sem chamar"):
+            conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
-            # Obtém o maior número de senha na sessão e incrementa para a próxima senha
-            cursor.execute("SELECT MAX(senha) FROM senha WHERE secao = ?", (st.session_state.secao,))
-            max_senha = cursor.fetchone()[0]
-            if max_senha is None:
-                new_senha = 1
-            else:
-                new_senha = max_senha + 1
-            hora_atual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Verifica se já existe algum registro "aberto"
             cursor.execute("""
-                INSERT INTO senha (secao, senha, hora, usuario, resposta, status, terminal)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (st.session_state.secao, new_senha, hora_atual, nome, "encerrado sem chamar", "encerrado", terminal_input))
-            conn.commit()
+                SELECT usuario 
+                FROM senha
+                WHERE secao = %s AND status = 'aberto'
+                LIMIT 1
+            """, (st.session_state.secao,))
+            open_record = cursor.fetchone()
+            if open_record:
+                st.session_state["chamar_info_message"] = (
+                    f"Aguarde, {open_record[0]} ainda não encerrou sua chamada."
+                )
+                conn.close()
+                st.stop()
+            else:
+                # Busca a próxima senha com status '0' (menor disponível)
+                cursor.execute("""
+                    SELECT senha 
+                    FROM senha
+                    WHERE secao = %s AND senha >= 1 AND status = '0'
+                    ORDER BY senha ASC
+                    LIMIT 1
+                """, (st.session_state.secao,))
+                row_next = cursor.fetchone()
+                if row_next:
+                    next_senha = row_next[0]
+                    hora_atual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    cursor.execute("""
+                        UPDATE senha
+                        SET hora = %s, usuario = %s, resposta = %s, status = %s, terminal = %s
+                        WHERE secao = %s AND senha = %s
+                    """, (
+                        hora_atual, nome, "não chamado", "encerrado", terminal_input,
+                        st.session_state.secao, next_senha
+                    ))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Senha {next_senha:03d} inserida como 'não chamado'.")
+                    # Restaura o estado para permitir nova chamada
+                    st.session_state["chamar_clicked"] = False
+                    st.rerun()
+                else:
+                    st.warning("Nenhuma senha disponível para adiantar.")
+                    conn.close()
+
+    ##################################
+    # Coluna do Card – Atualização Manual
+    ##################################
+    with col_card:
+        def render_card():
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT unidade, senha, hora
+                FROM senha
+                WHERE secao = %s AND status <> '0'
+                ORDER BY senha DESC
+                LIMIT 1
+            """, (st.session_state.secao,))
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute("""
+                    SELECT unidade, senha, hora
+                    FROM senha
+                    WHERE secao = %s AND status = 'admin' AND senha = 0
+                    LIMIT 1
+                """, (st.session_state.secao,))
+                row = cursor.fetchone()
             conn.close()
-            st.success(f"Senha {new_senha:03d} inserida como 'encerrado sem chamar'.")
 
+            if row:
+                cabecalho = row[0] if row[0] else "SEM UNIDADE"
+                senha_numero = row[1] if row[1] else 0
+                hora_str = row[2] if row[2] else "Data não encontrada"
+            else:
+                cabecalho, senha_numero, hora_str = "SEM UNIDADE", 0, "Data não encontrada"
 
+            st.session_state["senha_numero"] = senha_numero
+            secao_str = st.session_state.secao
 
+            card_html = f"""
+                <div style="border: 1px solid black; text-align:center; width:300px; margin: auto;">
+                    <div style="background-color:black; color:white; padding:10px; font-weight:bold;">
+                        {cabecalho}
+                    </div>
+                    <div style="padding:20px;">
+                        <div style="font-size:20px; font-weight:bold;">SENHA</div>
+                        <div style="font-size:54px; font-weight:bold;">{senha_numero:03d}</div>
+                    </div>
+                    <div style="background-color:black; color:white; padding:15px; font-size:14px;">
+                        DATA {hora_str} — Seção {secao_str}
+                    </div>
+                </div>
+            """
+            return card_html
+
+        st.markdown(render_card(), unsafe_allow_html=True)
+
+    # --- Tabela das Últimas Senhas Chamadas ---
     st.markdown("---")
-    st.write("## Senhas chamadas")
-    conn = sqlite3.connect("senhas.db")
+    st.markdown("### Últimas Senhas Chamadas")
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
     query = """
         SELECT secao, senha, hora, usuario, resposta, status, terminal
         FROM senha
-        WHERE secao = ? AND senha >= 1 AND status <> '0'
+        WHERE secao = %s AND senha >= 1 AND status <> '0'
         ORDER BY senha ASC
     """
-    df = pd.read_sql_query(query, conn, params=[st.session_state.secao])
+    import pandas as pd
+    try:
+        df = pd.read_sql_query(query, conn, params=[st.session_state.secao])
+        st.table(df)
+    except Exception as e:
+        st.error(f"Erro ao carregar a tabela: {e}")
     conn.close()
-    st.table(df)
 
+# ###############################################
+# # Aba "Senhas" (Gerar PDF)
+# ###############################################
 
-
-
-
-
-
-
-
-
-
-
-###############################################
-# Aba "Senhas" (Gerar PDF)
-###############################################
 elif selected == "Senhas":
     st.write("## Gerar PDF de Senhas")
-    # Cria 3 colunas: Senha Inicial, Senha Final e Unidade
-   
     col1, col2, col3 = st.columns(3)
     senha_inicial = col1.number_input("Senha Inicial:", value=1, step=1)
     senha_final = col2.number_input("Senha Final:", value=10, step=1)
     unidade = col3.text_input("Unidade:", value="")
 
-    # Cria duas colunas para os botões
     btn_col1, btn_col2 = st.columns(2)
     gerar_senhas = btn_col1.button("Gerar Senhas")
     gerar_impressao = btn_col2.button("Gerar Impressão")
@@ -446,63 +452,65 @@ elif selected == "Senhas":
         if senha_final < senha_inicial:
             st.error("Senha Final deve ser maior ou igual à Senha Inicial.")
         else:
-            conn = sqlite3.connect("senhas.db")
+            conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
-            # Remove registros existentes para a sessão atual, exceto os que têm status 'admin'
             cursor.execute("""
                 SELECT COUNT(*) FROM senha
-                WHERE secao = ? AND status <> 'admin'
+                WHERE secao = %s AND status <> 'admin'
             """, (st.session_state.secao,))
             count_check = cursor.fetchone()[0]
+
             if count_check > 0:
                 cursor.execute("""
                     DELETE FROM senha
-                    WHERE secao = ? AND status <> 'admin'
+                    WHERE secao = %s AND status <> 'admin'
                 """, (st.session_state.secao,))
                 conn.commit()
-            # Insere novos registros para cada senha, usando 0 em vez de valores vazios
+
             for num in range(senha_inicial, senha_final + 1):
                 cursor.execute("""
                     INSERT INTO senha (secao, senha, hora, usuario, resposta, status, terminal, unidade)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     st.session_state.secao,
                     num,
-                    0,   # hora
-                    0,   # usuario
+                    None,   # hora
+                    None,   # usuario
                     "chamando",   # resposta
-                    0,   # status
-                    0,   # terminal
+                    "0",   # status
+                    "0",   # terminal
                     unidade
                 ))
             conn.commit()
             conn.close()
             st.success("Senhas geradas com sucesso!")
 
-    # Rotina para gerar a impressão (PDF)
+    # Rotina para gerar a impressão (PDF) - desindentado para ficar independente
     if gerar_impressao:
-        conn = sqlite3.connect("senhas.db")
+        conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        # Verifica se há registros com senha >= 1 na sessão atual
         cursor.execute("""
             SELECT COUNT(*) FROM senha
-            WHERE secao = ? AND senha >= 1
+            WHERE secao = %s AND senha >= 1
         """, (st.session_state.secao,))
         count_senhas = cursor.fetchone()[0]
+
         if count_senhas < 1:
             st.error("Não há senhas geradas para impressão.")
             conn.close()
         else:
-            # Busca as senhas (com senha >= 1) diretamente do banco de dados
             cursor.execute("""
                 SELECT senha FROM senha
-                WHERE secao = ? AND senha >= 1
+                WHERE secao = %s AND senha >= 1
                 ORDER BY senha
             """, (st.session_state.secao,))
             cards = [row[0] for row in cursor.fetchall()]
             conn.close()
 
-            # Função para desenhar um único card
+            import io  # Certifique-se de ter importado io, canvas e A4
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.pagesizes import A4
+
             def draw_single_card(c, x, y, card_width, card_height, num, secao):
                 c.rect(x, y, card_width, card_height, stroke=1, fill=0)
                 c.setFillColorRGB(0, 0, 0)
@@ -523,7 +531,6 @@ elif selected == "Senhas":
                 c.drawCentredString(x + card_width/2, y + band_height - 10, "DATA 04/03/2025")
                 c.drawCentredString(x + card_width/2, y + band_height - 20, f"Seção {secao}")
 
-            # Função para gerar o PDF dos cards com layout em páginas
             def generate_cards_pdf(cards, secao):
                 buffer = io.BytesIO()
                 c = canvas.Canvas(buffer, pagesize=A4)
@@ -574,14 +581,13 @@ elif selected == "Senhas":
             """
             st.markdown(pdf_iframe, unsafe_allow_html=True)
 
-    # Exibe as senhas geradas, buscando os registros no banco (apenas senhas >= 1)
     st.write("## Senhas geradas (buscadas do banco de dados)")
     st.markdown(f"*Seção {st.session_state.secao}*")
-    conn = sqlite3.connect("senhas.db")
+    conn = psycopg2.connect(DATABASE_URL)
     query = """
         SELECT secao, senha, hora, usuario, resposta, status, terminal, unidade
         FROM senha
-        WHERE secao = ? AND senha >= 1
+        WHERE secao = %s AND senha >= 1
         ORDER BY senha
     """
     df = pd.read_sql_query(query, conn, params=[st.session_state.secao])
